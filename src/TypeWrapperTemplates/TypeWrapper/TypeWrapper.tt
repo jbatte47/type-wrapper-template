@@ -1,0 +1,155 @@
+﻿<#@ 
+template debug="false" hostspecific="false" language="C#" #><#@
+assembly name="System.Core" #><#@
+import namespace="System.Linq" #><#@
+import namespace="System.Text" #><#@
+import namespace="System.Text.RegularExpressions" #><#@
+import namespace="System.Collections.Generic" #><#@
+import namespace="System.Runtime.Remoting.Messaging" #><#@
+import namespace="System.Reflection" #><#@
+include file="NetworkStreamWrapper.settings.tt" #><#@
+output extension=".cs" #><#
+string ns = CallContext.LogicalGetData("NamespaceHint") as string;
+var usingDirectives = new List<string>{ TargetType.Namespace };
+var properties = TargetType.GetProperties(BindingFlags.Public | BindingFlags.Instance);
+var methods = TargetType.GetMethods(BindingFlags.Public | BindingFlags.Instance).Where(method => AllowMethod(method.Name));
+foreach(var property in properties)
+{
+	if(!_keywordMap.ContainsKey(property.PropertyType.Name)) usingDirectives.Add(property.PropertyType.Namespace);
+}
+foreach(var method in methods)
+{
+	if(!_keywordMap.ContainsKey(method.ReturnType.Name)) usingDirectives.Add(method.ReturnType.Namespace);
+	foreach(var parameter in method.GetParameters())
+	{
+		if(!_keywordMap.ContainsKey(parameter.ParameterType.Name)) usingDirectives.Add(parameter.ParameterType.Namespace);
+	}
+}
+#><# foreach(var usingDirective in usingDirectives.OrderBy(d => d).Distinct()) {#>using <#= usingDirective #>;
+<# } #>
+
+namespace <#= ns #>
+{
+	#region Interface
+
+	public interface I<#= TargetType.Name #>
+	{
+<# foreach(var property in properties) { #>
+		<#= MapType(property.PropertyType) #> <#= property.Name #>{<#= property.CanRead ? " get;" : string.Empty #><#= property.CanWrite ? " set;" : string.Empty #> }
+<# } #>
+
+<# foreach(var method in methods) { #>
+		<#= MapType(method.ReturnType) #> <#= method.Name #>(<#= BuildArgumentList(method) #>);
+<# } #>
+	}
+
+	#endregion
+
+	#region Wrapper
+
+	public class <#= TargetType.Name #>Wrapper : I<#= TargetType.Name #>
+	{
+		private readonly <#= TargetType.Name #> _innerType;
+
+		public <#= TargetType.Name #>Wrapper(<#= TargetType.Name #> innerType)
+		{
+			_innerType = innerType;
+		}
+
+<# foreach(var property in properties) { #>
+		public virtual <#= MapType(property.PropertyType) #> <#= property.Name #>
+		{
+<# if(property.CanRead) { #>
+			get{ return _innerType.<#= property.Name #>; }
+<# } #>
+<# if(property.CanWrite) { #>
+			set{ _innerType.<#= property.Name #> = value; }
+<# } #>
+		}
+
+<# } #>
+<# foreach(var method in methods) { #>
+		public virtual <#= MapType(method.ReturnType) #> <#= method.Name #>(<#= BuildArgumentList(method) #>)
+		{
+			<#= method.ReturnType != typeof(void) ? "return " : string.Empty #>_innerType.<#= method.Name #>(<#= BuildArgumentCallList(method) #>);
+		}
+
+<# } #>
+	}
+
+	#endregion
+}<#+
+private const string _argFormat = "{0} {1}";
+private const string _genericPattern = @"`\d+$";
+
+private IList<string> _prefixFilters = new List<string>{ "get_", "set_" };
+private IList<string> _nameFilters = new List<string>{ "ToString", "Equals", "GetHashCode", "GetType" };
+
+private IDictionary<string, string> _keywordMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+{
+	{ "Boolean", "bool" },
+	{ "Byte", "byte" },
+	{ "Char", "char" },
+	{ "Decimal", "decimal" },
+	{ "Double", "double" },
+	{ "Single", "float" },
+	{ "Int32", "int" },
+	{ "Int64", "long" },
+	{ "SByte", "sbyte" },
+	{ "Int16", "short" },
+	{ "UInt32", "uint" },
+	{ "UInt64", "ulong" },
+	{ "UInt16", "ushort" },
+	{ "String", "string" },
+	{ "Void", "void" },
+	{ "Object", "object" }
+};
+
+private string MapKeyword(Type type, string token)
+{
+	string rawToken = type.IsArray ? token.Substring(0, token.Length - 2) : token;
+	string format = type.IsArray ? "{0}[]" : "{0}";
+	return _keywordMap.ContainsKey(rawToken) ? string.Format(format, _keywordMap[rawToken]) : token;
+}
+
+private string MapTypeToken(Type type, string token)
+{
+	string preMappedToken = MapKeyword(type, token);
+	if(type.IsGenericType)
+	{
+		string name = Regex.Replace(preMappedToken, _genericPattern, string.Empty);
+		IEnumerable<string> args = type.GetGenericArguments().Select(argType => MapTypeToken(argType, argType.Name));
+		return string.Format("{0}<{1}>", name, string.Join(",", args));
+	}
+	return preMappedToken;
+}
+
+private string MapType(Type type)
+{
+	return type.Name.EndsWith("&")
+		? string.Format("ref {0}", MapTypeToken(type, type.Name.Substring(0, type.Name.Length - 1)))
+		: MapTypeToken(type, type.Name);
+}
+
+private string MapParameter(Type type, string name)
+{
+	return type.IsByRef ? string.Format("ref {0}", name) : name;
+}
+
+private string BuildArgumentList(MethodInfo method)
+{
+	var arguments = method.GetParameters().Select(parameter => string.Format(_argFormat, MapType(parameter.ParameterType), parameter.Name));
+	return string.Join(", ", arguments);
+}
+
+private string BuildArgumentCallList(MethodInfo method)
+{
+	var arguments = method.GetParameters().Select(parameter => MapParameter(parameter.ParameterType, parameter.Name));
+	return string.Join(", ", arguments);
+}
+
+private bool AllowMethod(string name)
+{
+	return _prefixFilters.All(filter => !name.StartsWith(filter)) && _nameFilters.All(filter => !name.Equals(filter));
+}
+#>

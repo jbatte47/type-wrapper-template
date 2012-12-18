@@ -1,0 +1,4 @@
+﻿<#+
+// the following type will be wrapped by T4 to produce a mockable component:
+public Type TargetType = typeof(object);
+#>
